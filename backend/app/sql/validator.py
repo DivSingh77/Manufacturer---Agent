@@ -1,63 +1,60 @@
-import re
-
-import sqlparse
 from app.security.access_control import get_allowed_tables
+from sqlglot import exp, parse
+from sqlglot.errors import ParseError
 
-FORBIDDEN_KEYWORDS = {
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "DROP",
-    "ALTER",
-    "TRUNCATE",
-    "CREATE",
-    "GRANT",
-    "REVOKE",
-}
+FORBIDDEN_NODE_TYPES = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Drop,
+    exp.Create,
+    exp.Alter,
+    exp.Command,
+    exp.Merge,
+)
 
 
 def extract_tables(sql: str) -> set[str]:
+    """
+    Parse SQL into an AST and return every physical table referenced.
+
+    This catches:
+    - FROM table
+    - JOIN table
+    - comma joins
+    - nested subqueries
+    - CTE bodies
+    """
+
+    try:
+        statements = parse(sql, read="postgres")
+    except ParseError as exc:
+        raise ValueError(f"SQL parsing failed: {exc}") from exc
+
+    if len(statements) != 1:
+        raise ValueError("Only one SQL statement is allowed.")
+
+    statement = statements[0]
+
+    # CTE names are aliases, not real database tables.
+    cte_names = {
+        cte.alias_or_name.lower()
+        for cte in statement.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
 
     tables = set()
 
-    parsed = sqlparse.parse(sql)
+    for table in statement.find_all(exp.Table):
+        table_name = table.name
 
-    if not parsed:
-        return tables
+        if not table_name:
+            continue
 
-    statement = parsed[0]
+        table_name = table_name.lower()
 
-    tokens = list(statement.flatten())
-
-    for i, token in enumerate(tokens):
-
-        if token.ttype and token.ttype in sqlparse.tokens.Keyword:
-
-            if token.value.upper() in {"FROM", "JOIN"}:
-
-                # Find the next meaningful token
-                for next_token in tokens[i + 1:]:
-
-                    if next_token.is_whitespace:
-                        continue
-
-                    value = next_token.value.strip()
-
-                    value = value.strip('"')
-
-                    # Remove aliases
-                    value = value.split()[0]
-
-                    # Handle schema-qualified names
-                    value = value.split(".")[-1]
-
-                    if re.match(
-                        r"^[a-zA-Z_][a-zA-Z0-9_]*$",
-                        value,
-                    ):
-                        tables.add(value.lower())
-
-                    break
+        if table_name not in cte_names:
+            tables.add(table_name)
 
     return tables
 
@@ -67,36 +64,49 @@ def validate_sql(
     persona: str,
 ) -> tuple[bool, str]:
 
-    cleaned = sql.strip()
+    cleaned = (sql or "").strip()
 
     if not cleaned:
         return False, "SQL is empty."
 
-    # Only one statement.
-    statements = sqlparse.parse(cleaned)
+    try:
+        statements = parse(cleaned, read="postgres")
+    except ParseError:
+        return False, "Generated SQL could not be safely parsed."
 
     if len(statements) != 1:
         return False, "Only one SQL statement is allowed."
 
-    # Must begin with SELECT or WITH.
-    first_word = cleaned.split()[0].upper()
+    statement = statements[0]
 
-    if first_word not in {"SELECT", "WITH"}:
-        return False, "Only SELECT queries are allowed."
+    # --------------------------------------------------
+    # Read-only enforcement
+    # --------------------------------------------------
 
-    # Forbidden operations.
-    upper_sql = cleaned.upper()
+    if not isinstance(
+        statement,
+        (exp.Select, exp.Union, exp.Intersect, exp.Except),
+    ):
+        # WITH queries generally parse to the underlying SELECT,
+        # so legitimate CTE SELECTs remain allowed.
+        return False, "Only read-only SELECT queries are allowed."
 
-    for keyword in FORBIDDEN_KEYWORDS:
+    # Defense against writes hidden inside more complex syntax.
+    for forbidden_type in FORBIDDEN_NODE_TYPES:
+        if statement.find(forbidden_type):
+            return False, "Only read-only SELECT queries are allowed."
 
-        if re.search(
-            rf"\b{keyword}\b",
-            upper_sql,
-        ):
-            return False, f"Forbidden SQL operation: {keyword}"
+    # --------------------------------------------------
+    # Persona table allowlist
+    # --------------------------------------------------
 
-    # Persona access validation.
-    referenced_tables = extract_tables(cleaned)
+    try:
+        referenced_tables = extract_tables(cleaned)
+    except ValueError as exc:
+        return False, str(exc)
+
+    if not referenced_tables:
+        return False, "Query does not reference a permitted database table."
 
     allowed_tables = {
         table.lower()
@@ -108,8 +118,7 @@ def validate_sql(
     if unauthorized:
         return (
             False,
-            "Unauthorized tables: "
-            + ", ".join(sorted(unauthorized))
+            "Query references tables not permitted for this persona.",
         )
 
     return True, "SQL is valid."

@@ -37,9 +37,10 @@ def chat(request: ChatRequest):
             "visualization": result.get("visualization"),
         }
 
-    except Exception as e:
-
+    except Exception:
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail=(
+                "The agent encountered an unexpected internal error."
+            ),
         )

@@ -1,17 +1,29 @@
-from app.security.access_control import get_allowed_tables
 from app.sql.generator import generate_sql
 
 
 def generate_sql_node(state):
 
-    question = state["question"]
-    persona = state["persona"]
+    retry_count = state.get(
+        "retry_count",
+        0,
+    )
 
     sql = generate_sql(
-        question,
-        persona,
+        question=state["question"],
+        persona=state["persona"],
+        validation_error=state.get(
+            "validation_error"
+        ),
+        execution_error=state.get(
+            "execution_error"
+        ),
+        previous_sql=state.get("sql"),
     )
 
     return {
         "sql": sql,
+        "sql_valid": None,
+        "validation_error": None,
+        "execution_error": None,
+        "retry_count": retry_count,
     }

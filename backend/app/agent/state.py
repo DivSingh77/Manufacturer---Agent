@@ -25,6 +25,8 @@ class AgentState(TypedDict, total=False):
     # Validation
     sql_valid: bool
     validation_error: str
+    
+    execution_error: str | None
 
     # Database result
     result_columns: list[str]

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+openai
+langgraph
+langchain-core
+langsmith
+psycopg2
+python-dotenv
+sqlglot

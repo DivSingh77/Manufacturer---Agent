@@ -1,5 +1,19 @@
 from app.security.access_control import get_allowed_tables, validate_persona
 
+PERSONA_ALLOWED_DOMAINS = {
+    "warehouse": {
+        "inventory",
+    },
+    "procurement": {
+        "procurement",
+    },
+    "owner": {
+        "inventory",
+        "procurement",
+        "cross_domain",
+    },
+}
+
 
 def access_guard_node(state):
 
@@ -9,23 +23,21 @@ def access_guard_node(state):
     try:
         persona = validate_persona(persona)
 
-        # Warehouse has inventory-only access
-        if persona == "warehouse" and domain == "procurement":
-            raise ValueError(
-                "Access denied: warehouse users cannot access procurement data."
-            )
+        allowed_domains = PERSONA_ALLOWED_DOMAINS[persona]
 
-        # Procurement may use inv_items / inv_locations only as lookup
-        # tables while answering PROCUREMENT questions.
-        #
-        # A direct inventory-analysis question such as current stock
-        # must therefore be denied.
-        if persona == "procurement" and domain == "inventory":
-            raise ValueError(
-                "Access denied: procurement users cannot perform inventory analysis."
-            )
+        if domain not in allowed_domains:
+            return {
+                "persona": persona,
+                "allowed_tables": [],
+                "error": (
+                    f"Access denied: {persona} users cannot "
+                    f"access this business domain."
+                ),
+            }
 
-        allowed_tables = list(get_allowed_tables(persona))
+        allowed_tables = sorted(
+            get_allowed_tables(persona)
+        )
 
         return {
             "persona": persona,
@@ -33,7 +45,8 @@ def access_guard_node(state):
             "error": None,
         }
 
-    except ValueError as e:
+    except ValueError:
         return {
-            "error": str(e),
+            "allowed_tables": [],
+            "error": "Access denied: invalid persona.",
         }

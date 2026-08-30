@@ -298,28 +298,48 @@ def get_live_schema():
 # BUILD LLM SCHEMA CONTEXT
 # ============================================================
 
-def build_schema_context():
+def build_schema_context(allowed_tables=None):
     """
-    Combines live database metadata with our business knowledge.
+    Build database context containing only tables permitted
+    for the current persona.
 
-    This context will eventually be supplied to the SQL-generation LLM.
+    This is an LLM-context security layer in addition to
+    deterministic authorization and SQL validation.
     """
 
     live_schema = get_live_schema()
+
+    if allowed_tables is not None:
+        allowed_tables = {
+            table.lower()
+            for table in allowed_tables
+        }
 
     context = []
 
     context.append("DATABASE SCHEMA\n")
 
+    visible_tables = set()
+
     for table_name, columns in live_schema.items():
 
-        # Skip legacy table from active context
-        if table_name == "inv_field_definitions":
+        table_key = table_name.lower()
+
+        # Legacy table excluded from active context.
+        if table_key == "inv_field_definitions":
             continue
+
+        if (
+            allowed_tables is not None
+            and table_key not in allowed_tables
+        ):
+            continue
+
+        visible_tables.add(table_key)
 
         description = TABLE_DESCRIPTIONS.get(
             table_name,
-            "No description available."
+            "No description available.",
         )
 
         context.append(
@@ -329,33 +349,104 @@ def build_schema_context():
         )
 
         for column in columns:
-
             context.append(
                 f"  - {column['name']} "
                 f"({column['type']}, "
                 f"nullable={column['nullable']})"
             )
 
+    # ------------------------------------------------
+    # Include only joins whose two tables are visible.
+    # ------------------------------------------------
+
     context.append("\nIMPLICIT JOINS\n")
 
     for join in IMPLICIT_JOINS:
 
-        context.append(
-            f"- {join['left']} = {join['right']}\n"
-            f"  {join['description']}"
+        left_table = (
+            join["left"]
+            .split(".", 1)[0]
+            .lower()
         )
 
-    context.append("\nTRANSACTION REFERENCE RULES\n")
+        right_table = (
+            join["right"]
+            .split(".", 1)[0]
+            .lower()
+        )
 
-    for key, value in TRANSACTION_REFERENCE_RULES.items():
+        if (
+            left_table in visible_tables
+            and right_table in visible_tables
+        ):
+            context.append(
+                f"- {join['left']} = {join['right']}\n"
+                f"  {join['description']}"
+            )
+
+    # Inventory transaction reference rules can reveal
+    # procurement relationships, so only expose them to
+    # personas that can see the referenced domains.
+    if "inv_transactions" in visible_tables:
 
         context.append(
-            f"- reference_type='{key}': {value}"
+            "\nTRANSACTION REFERENCE RULES\n"
         )
+
+        for key, value in (
+            TRANSACTION_REFERENCE_RULES.items()
+        ):
+
+            # Warehouse should not be shown procurement
+            # table relationships.
+            if (
+                allowed_tables is not None
+                and key
+                in {
+                    "purchase_order",
+                    "unexpected_receipt",
+                }
+                and not any(
+                    table.startswith("proc_")
+                    for table in visible_tables
+                )
+            ):
+                continue
+
+            context.append(
+                f"- reference_type='{key}': {value}"
+            )
 
     context.append("\nBUSINESS RULES\n")
 
     for rule in BUSINESS_RULES:
+
+        rule_lower = rule.lower()
+
+        # Avoid exposing procurement-specific business
+        # rules to inventory-only personas.
+        if (
+            allowed_tables is not None
+            and not any(
+                table.startswith("proc_")
+                for table in visible_tables
+            )
+            and "proc_" in rule_lower
+        ):
+            continue
+
+        # Avoid exposing inventory-only rules when inventory
+        # tables are unavailable.
+        if (
+            allowed_tables is not None
+            and not any(
+                table.startswith("inv_")
+                for table in visible_tables
+            )
+            and "inv_" in rule_lower
+        ):
+            continue
+
         context.append(f"- {rule}")
 
     return "\n".join(context)

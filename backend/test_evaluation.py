@@ -69,6 +69,17 @@ TESTS = [
         "should_be_denied": False,
         "expected_visualization": "line",
     },
+    {
+        "name": "Owner cross-domain PO vs stock",
+        "persona": "owner",
+        "question": (
+            "For PO-2026-0029, compare what was ordered "
+            "and received with the current stock of those items."
+        ),
+        "expected_domain": "cross_domain",
+        "should_have_sql": True,
+        "should_be_denied": False,
+    },
 ]
 
 
