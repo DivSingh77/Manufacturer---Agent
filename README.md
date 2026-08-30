@@ -1,10 +1,16 @@
 # Manufacturer Agent
 
-An AI-powered, persona-aware manufacturing operations assistant for querying **inventory** and **procurement** data using natural language.
+A persona-aware AI assistant for manufacturing operations that answers natural-language questions over live **inventory** and **procurement** data.
 
-The system converts natural-language business questions into safe PostgreSQL queries, enforces persona-specific access rules, executes validated queries against a live database, generates business-friendly responses, and returns structured visualization data for the frontend.
+The system is designed around three different business personas:
 
-The project is built using:
+- Warehouse
+- Procurement
+- Business Owner
+
+Each persona has different access boundaries and asks fundamentally different types of questions.
+
+The application uses:
 
 - Next.js
 - FastAPI
@@ -12,175 +18,196 @@ The project is built using:
 - OpenAI
 - PostgreSQL
 - LangSmith
+- SQLGlot
 - Recharts
 
 ---
 
 # 1. Problem Statement
 
-Manufacturing organizations typically store operational data across systems such as:
+A manufacturing company typically has two closely related but operationally separate systems:
 
-- Inventory Management
-- Procurement
-- Purchase Orders
-- Vendors
-- Warehouses
-- Stock Transactions
-- Goods Receipts
+1. Procurement
+2. Inventory
 
-Business users often need answers to questions such as:
+Procurement is responsible for ordering material from vendors.
 
-- Which items are currently out of stock?
-- Which purchase orders are partially received?
-- What items were received against a particular purchase order?
-- Which vendor has the highest number of purchase orders?
-- What is the purchase price history of an item?
-- What is the current stock across warehouse locations?
+Inventory is responsible for physically receiving, storing, transferring, and issuing that material.
 
-Traditional dashboards require users to understand predefined reports and filters.
+These two teams may deal with the same item, but they care about completely different business questions.
 
-This project provides a conversational interface where users can ask these questions directly in natural language.
-
-The system then:
-
-1. Understands the user's intent.
-2. Identifies the relevant business domain.
-3. Verifies whether the selected persona has permission to access that domain.
-4. Generates SQL dynamically.
-5. Validates the generated SQL.
-6. Executes the query against PostgreSQL.
-7. Converts database results into a business-friendly answer.
-8. Generates structured chart metadata when visualization is useful.
-
----
-
-# 2. Key Features
-
-## Natural Language to SQL
-
-Users can ask business questions such as:
+For example:
 
 ```text
-Which purchase orders are partially received?
+Item: Screws
 
-The system dynamically generates PostgreSQL such as:
+A warehouse user may ask:
 
-SELECT
-    po.id,
-    po.po_number,
-    po.status,
-    po.placed_on,
-    po.total_amount
-FROM proc_purchase_orders po
-WHERE po.status = 'partial';
+How many screws are physically available right now?
 
-The generated SQL is validated before execution.
+A procurement user may ask:
 
-Persona-Based Access Control
+Has the purchase order for screws been fully received?
 
-The system supports three personas:
+The business owner may ask:
 
+How many screws did we order, how many arrived,
+and how many are currently left in stock?
+
+The goal of this project is to provide a natural-language AI assistant that understands:
+
+what the user is asking,
+which business domain the question belongs to,
+who the user is,
+which data that persona is allowed to access,
+and how to answer accurately using the actual database.
+
+The system must never invent operational numbers.
+
+PostgreSQL remains the source of truth.
+
+2. Core Requirements
+
+The application supports:
+
+Natural-language business questions
+Inventory analytics
+Procurement analytics
+Persona-based access control
+Cross-domain analysis for business owners
+Dynamic SQL generation
+Deterministic SQL validation
+Safe database execution
+Human-readable answers
+Charts when visualization is useful
+LangSmith observability
+Automated evaluation
+3. Personas
 Warehouse
 
-Warehouse users can access inventory-related data only.
+Warehouse users are concerned with physical stock and inventory movement.
 
-Allowed areas include:
+Typical questions:
+
+Which items currently have zero stock?
+Show current stock by warehouse location.
+Show recent inventory transactions.
+
+Warehouse users can access inventory data such as:
 
 Items
 Categories
-Warehouse locations
+Locations
 Current stock
 Inventory transactions
-Warehouse issues
+Warehouse issue targets
 
-Example:
+Warehouse users are not allowed to access procurement data.
 
-Which items currently have zero stock?
-
-Allowed.
-
-But:
+For example:
 
 Show me all purchase orders.
 
-is denied before SQL generation.
+is rejected before SQL generation.
 
 Procurement
 
-Procurement users can access:
+Procurement users are concerned with:
 
 Purchase orders
-Purchase-order lines
 Vendors
+Ordered quantities
+Received quantities
+Purchase prices
+PO status
 Receipts
-Payment tranches
-Unexpected receipts
-Regularisations
+Payment information
 
-They also have lookup access to:
+Example:
+
+Which purchase orders are partially received?
+Show details of PO-2026-0029 including vendor and items.
+
+Procurement users may use:
 
 inv_items
 inv_locations
 
-This allows procurement queries to show human-readable item and warehouse information without granting full inventory-analysis access.
+as lookup/reference tables so that results contain human-readable item and location names.
+
+However, procurement users are not allowed to perform general inventory analysis.
 
 For example:
 
-Show details of PO-2026-0029 including vendor and items.
-
-is allowed.
-
-But:
-
 What is the current stock of all items?
 
-is denied.
+is rejected.
 
-Owner
+Business Owner
 
-Owner users have cross-domain access to both:
+The business owner can access both inventory and procurement domains.
 
-Inventory
-Procurement
+The owner can also ask genuine cross-domain questions such as:
 
-This allows higher-level operational analysis across the organization.
+For PO-2026-0029, compare what was ordered and received
+with the current stock of those items.
 
-3. Security Architecture
+This requires combining procurement and inventory information.
 
-The application does not rely only on the LLM for authorization.
-
-It uses multiple layers of protection.
-
-User Question
-      |
-      v
-Intent / Domain Classification
-      |
-      v
-Persona Access Guard
-      |
-      +----------------------+
-      |                      |
-   Denied                  Allowed
-      |                      |
-      v                      v
-Safe Response          SQL Generation
+4. Architecture
+                       User + Persona
                              |
                              v
-                      SQL Validation
+                       Next.js UI
                              |
-                      +------+------+
-                      |             |
-                   Invalid        Valid
-                      |             |
-                    Retry           v
-                               PostgreSQL
-
-This provides defense in depth.
-
-Even if the LLM generates an unauthorized query, the SQL validator performs a second deterministic authorization check before execution.
-
-4. Technology Stack
+                             v
+                       FastAPI API
+                             |
+                             v
+                        LangGraph
+                             |
+                             v
+                  Intent / Domain Classifier
+                             |
+                             v
+                      Access Guard
+                             |
+                +------------+------------+
+                |                         |
+              DENIED                   ALLOWED
+                |                         |
+                v                         v
+          Safe Response             SQL Generator
+                                          |
+                                          v
+                               Persona-Scoped Schema
+                                          |
+                                          v
+                                   SQL Generation
+                                          |
+                                          v
+                                SQLGlot Validation
+                                          |
+                               +----------+----------+
+                               |                     |
+                            INVALID                VALID
+                               |                     |
+                          Retry if possible           v
+                                               PostgreSQL
+                                                    |
+                                      +-------------+-------------+
+                                      |                           |
+                                    ERROR                       SUCCESS
+                                      |                           |
+                                 Retry if possible                 v
+                                      |                      Visualization
+                                      |                           |
+                                      +------> Safe Failure       v
+                                                             Response
+                                                                 |
+                                                                 v
+                                                            Next.js UI
+5. Technology Stack
 Frontend
 Next.js
 TypeScript
@@ -189,24 +216,26 @@ Recharts
 
 The frontend provides:
 
-Persona selector
-Natural-language query interface
-AI-generated answers
-SQL inspection
-Query result tables
-Dynamic charts
-Access-control feedback
+Persona selection
+Natural-language question input
+Suggested demo questions
+Agent responses
+Access-denied feedback
+Generated SQL inspection
+Result tables
+Line and bar charts
 Backend
 Python
 FastAPI
 LangGraph
 OpenAI API
+SQLGlot
 
-FastAPI exposes the main endpoint:
+FastAPI exposes:
 
 POST /api/chat
 
-Example request:
+Example:
 
 {
   "question": "Which purchase orders are partially received?",
@@ -214,222 +243,275 @@ Example request:
 }
 Database
 PostgreSQL
-Railway-hosted database
 
-The agent works against a live relational manufacturing dataset.
+The application queries a live manufacturing dataset containing procurement and inventory tables.
 
-Agent Orchestration
+Observability
 
-LangGraph is used to define the execution workflow.
+LangSmith is used for:
 
-Main nodes:
+LangGraph tracing
+Node-level execution analysis
+Prompt inspection
+SQL-generation debugging
+Retry inspection
+Latency analysis
+Access-control verification
+Error analysis
+6. LangGraph Workflow
+
+The current graph contains these major nodes:
 
 classify
     |
 access_guard
     |
+access_router
+    |
 generate_sql
     |
 validate_sql
     |
+validation_router
+    |
 execute_sql
+    |
+execution_router
     |
 visualize
     |
 respond
 
-Conditional routing is used for:
+Additional nodes:
 
-Access-denied requests
-SQL-validation failures
-SQL retry behavior
-Observability
+increment_retry
+query_failure
 
-LangSmith is used for:
+These are used to handle validation/runtime failures safely.
 
-Tracing LangGraph executions
-Inspecting node execution
-Debugging prompts
-SQL-generation analysis
-Latency analysis
-Error inspection
-Guardrail verification
-5. LangGraph Workflow
+7. Security Model
 
-The complete workflow is:
+The project uses multiple independent layers of protection.
 
-                         User
-                           |
-                           v
-                    Next.js Frontend
-                           |
-                           v
-                     FastAPI /api/chat
-                           |
-                           v
-                    +---------------+
-                    |   Classifier  |
-                    +-------+-------+
-                            |
-                 intent + domain
-                            |
-                            v
-                    +---------------+
-                    | Access Guard  |
-                    +-------+-------+
-                            |
-                    +-------+-------+
-                    |               |
-                  Denied          Allowed
-                    |               |
-                    v               v
-                 Respond      SQL Generator
-                                    |
-                                    v
-                              SQL Validator
-                                    |
-                             +------+------+
-                             |             |
-                           Invalid       Valid
-                             |             |
-                           Retry           v
-                                      PostgreSQL
-                                           |
-                                           v
-                                   Visualization
-                                           |
-                                           v
-                                      Response
-                                           |
-                                           v
-                                      Next.js UI
-6. Database Domains
+Layer 1 — Domain Authorization
 
-The database contains 17 core tables.
+The classifier determines:
 
-Inventory Domain
+inventory
+procurement
+cross_domain
+
+The access guard then checks whether the persona is allowed to access that domain.
+
+Rules:
+
+Warehouse
+    inventory       allowed
+    procurement     denied
+    cross_domain    denied
+
+Procurement
+    procurement     allowed
+    inventory       denied
+    cross_domain    denied
+
+Owner
+    inventory       allowed
+    procurement     allowed
+    cross_domain    allowed
+Layer 2 — Persona-Scoped Schema
+
+Restricted personas are not given the entire database schema.
+
+For example:
+
+Warehouse SQL generation receives only inventory-related schema.
+
+Procurement receives procurement tables plus allowed lookup tables.
+
+Owner receives the full relevant schema.
+
+This reduces the chance of the LLM referencing unauthorized data.
+
+Layer 3 — SQLGlot AST Validation
+
+Generated SQL is parsed using SQLGlot.
+
+This allows the validator to inspect every physical table referenced in the SQL AST.
+
+It catches:
+
+Standard joins
+Comma-style joins
+Nested subqueries
+CTEs
+Unauthorized tables
+
+Example attack:
+
+SELECT *
+FROM inv_items i, proc_purchase_orders p
+WHERE i.id = p.vendor_id;
+
+For a warehouse user this is rejected because both physical tables are detected.
+
+Layer 4 — Read-Only Query Enforcement
+
+Only read-only SELECT queries are accepted.
+
+Operations such as:
+
+INSERT
+UPDATE
+DELETE
+DROP
+ALTER
+TRUNCATE
+CREATE
+GRANT
+REVOKE
+
+are rejected.
+
+Layer 5 — Database Execution Protection
+
+Database execution uses additional safeguards:
+
+Read-only session
+Statement timeout
+Bounded result rows
+Rollback after reads
+
+For production, the database account should additionally have actual SELECT-only PostgreSQL permissions.
+
+8. Reliability / Retry Handling
+
+The agent can recover from two types of SQL failure.
+
+Validation Failure
+
+Example:
+
+LLM generates SQL
+        |
+        v
+SQL validator rejects it
+        |
+        v
+Retry count checked
+        |
+        +---- retry available ---> regenerate SQL
+        |
+        +---- exhausted ----------> safe failure response
+Runtime Database Failure
+
+Sometimes SQL can pass validation but still fail during execution.
+
+Examples:
+
+Invalid column
+Type mismatch
+Incorrect database expression
+
+Runtime errors are captured internally.
+
+The raw PostgreSQL error is not returned to the frontend.
+
+Instead:
+
+Execution error
+      |
+      v
+Retry available?
+   /       \
+ yes       no
+  |         |
+  v         v
+Repair SQL  Safe failure
+
+The previous SQL and internal error can be provided back to the SQL generator during repair.
+
+9. Safe Failure Behavior
+
+When the system cannot safely answer after retries, it returns a generic message such as:
+
+I couldn't safely answer this question from the available
+database schema after multiple attempts.
+Please try rephrasing the question.
+
+Internal database details such as:
+
+Table names
+Internal columns
+Driver errors
+Stack traces
+
+are not exposed to the frontend.
+
+10. Database Domains
+
+The database contains 17 tables.
+
+Inventory
 inv_items
-
-Stores item master data.
-
 inv_categories
-
-Stores item categories.
-
 inv_sub_categories
-
-Stores first-level subcategories.
-
 inv_sub_categories_2
-
-Stores deeper item classification.
-
 inv_locations
-
-Stores warehouse/storage locations.
-
 inv_current_stock
-
-Stores current stock quantity per item/location.
-
 inv_issued_to_targets
-
-Stores warehouse issue targets.
-
 inv_transactions
-
-Stores inventory movement history.
-
-Transaction types include:
-
-inbound
-outbound
-transfer_in
-transfer_out
-
-Reference types include:
-
-purchase_order
-unexpected_receipt
-transfer
-warehouse_issue
 inv_field_definitions
 
-Additional inventory metadata.
+inv_field_definitions is not actively used by the MVP.
 
-Procurement Domain
+Procurement
 proc_vendors
-
-Vendor master.
-
 proc_purchase_orders
-
-Purchase-order header.
-
-Observed statuses:
-
-placed
-partial
-received
 proc_po_lines
-
-Purchase-order item lines.
-
 proc_po_payment_tranches
-
-PO payment information.
-
 proc_po_receipts
-
-Goods received against PO lines.
-
 proc_po_line_regularisations
-
-PO line regularisation records.
-
-Unexpected Receipt Domain
+Unexpected Receipts
 proc_unexpected_receipt_headers
-
-Unexpected receipt header records.
-
 proc_unexpected_receipts
-
-Unexpected receipt line-level records.
-
-7. Important Data Relationships
-Purchase Order to Vendor
+11. Important Relationships
+Purchase Order → Vendor
 proc_purchase_orders.vendor_id
     ->
 proc_vendors.id
-Purchase Order to Lines
+Purchase Order → Lines
 proc_purchase_orders.id
     ->
 proc_po_lines.po_id
-PO Lines to Items
+PO Line → Item
 proc_po_lines.inv_item_id
     ->
 inv_items.id
-Purchase Order Receipts
-
-Correct receipt relationship:
-
-proc_purchase_orders.id
-        |
-        v
-proc_po_lines.po_id
-
+PO Line → Receipt
 proc_po_lines.id
-        |
-        v
+    ->
 proc_po_receipts.po_line_id
 
-Human-readable receipt queries may additionally join:
+This means the correct receipt chain is:
 
-proc_po_lines.inv_item_id
+Purchase Order
+      |
+      v
+PO Lines
+      |
+      v
+PO Receipts
+Receipt → Location
+proc_po_receipts.location_id
+    ->
+inv_locations.id
+Current Stock
+inv_current_stock.item_id
     ->
 inv_items.id
 
-proc_po_receipts.location_id
+inv_current_stock.location_id
     ->
 inv_locations.id
 Inventory Transactions
@@ -440,7 +522,59 @@ inv_items.id
 inv_transactions.location_id
     ->
 inv_locations.id
-8. Example Queries
+
+Transaction types include:
+
+inbound
+outbound
+transfer_in
+transfer_out
+12. Visualization Support
+
+The visualization layer is based on both:
+
+intent
+returned data shape
+
+This makes chart generation more general than one hardcoded query.
+
+Supported examples include:
+
+Price History
+date + unit_price
+
+renders:
+
+Line chart
+Stock by Location
+location_name + total_quantity
+
+renders:
+
+Bar chart
+Inventory Movement
+transaction_date + movement_quantity
+
+renders:
+
+Line chart
+Vendor Comparison
+vendor_name + purchase_order_count
+
+renders:
+
+Bar chart
+Vendor Spend
+vendor_name + total_spend
+
+renders:
+
+Bar chart
+Generic Time Series
+
+When the result contains a date-like field and a numeric metric, the system can fall back to a trend line chart.
+
+13. Example Questions
 Warehouse
 Which items currently have zero stock?
 Show me the current stock by warehouse location.
@@ -450,51 +584,101 @@ Which purchase orders are partially received?
 Show details of PO-2026-0029 including vendor and items.
 Show receipts for PO-2026-0029.
 Which vendors have the most purchase orders?
-Which items have been purchased most frequently?
-Show the purchase price history of MS C Channel – 125×65×5mm.
+Show the purchase price history of
+MS C Channel – 125×65×5mm.
 Owner
 What is the current stock of all items?
 Which vendors have the most purchase orders?
-Show details of PO-2026-0029 including vendor and items.
-9. Visualization Support
+For PO-2026-0029, compare what was ordered and received
+with the current stock of those items.
+14. Automated Evaluation
 
-The backend can return chart-ready metadata for relevant questions.
+The primary evaluation suite is:
 
-Example query:
+python test_evaluation.py
 
-Show the purchase price history of MS C Channel – 125×65×5mm.
+Current result:
 
-Example backend visualization response:
+Passed: 9
+Failed: 0
+Total:  9
+Score:  100.0%
 
-{
-  "type": "line",
-  "title": "Purchase Price History",
-  "x_key": "placed_on",
-  "y_key": "unit_price",
-  "data": [
-    {
-      "po_number": "PO-2026-0019",
-      "placed_on": "2026-08-07",
-      "unit_price": 18.2,
-      "quantity_ordered": 805,
-      "line_total": 14651,
-      "currency": "INR"
-    },
-    {
-      "po_number": "PO-2026-0029",
-      "placed_on": "2026-08-12",
-      "unit_price": 18.13,
-      "quantity_ordered": 2884,
-      "line_total": 52286.92,
-      "currency": "INR"
-    }
-  ]
-}
+This means all 9 current MVP scenarios pass.
 
-The frontend renders this using Recharts.
+It does not mean that all possible natural-language questions have 100% accuracy.
 
-10. Project Structure
+15. Nine Critical Evaluation Scenarios
+#	Scenario	Expected behavior
+1	Warehouse inventory access	Allowed
+2	Warehouse procurement access	Denied
+3	Procurement PO access	Allowed
+4	Procurement inventory analysis	Denied
+5	Owner inventory access	Allowed
+6	Multi-table PO details	Correct joins
+7	PO receipts	Correct PO → line → receipt relationship
+8	Price history	SQL + line-chart visualization
+9	Owner cross-domain PO vs stock	Procurement + inventory combined
+16. Security Hardening Tests
+
+Run:
+
+python test_security_hardening.py
+
+Covered scenarios include:
+
+Comma-style join bypass attempt
+Explicit unauthorized JOIN
+Nested unauthorized subquery
+Legitimate warehouse inventory query
+Procurement inventory denial
+No SQL generation after denied access
+Warehouse cross-domain denial
+Owner cross-domain allowance
+
+Current status:
+
+ALL SECURITY TESTS PASSED
+17. Reliability Tests
+
+Run:
+
+python test_reliability.py
+
+Covered scenarios:
+
+Runtime database exception captured
+Raw DB exception not exposed as user-facing error
+Failed queries return empty results
+Retry exhaustion returns a real message
+Internal column names are not leaked
+Failed requests return no visualization
+
+Current status:
+
+ALL RELIABILITY TESTS PASSED
+18. Visualization Tests
+
+Run:
+
+python test_visualization_general.py
+
+Covered:
+
+Price-history line chart
+Stock-by-location bar chart
+Inventory-movement line chart
+Vendor-comparison bar chart
+Vendor-spend bar chart
+Non-chart-friendly results return no chart
+
+Current status:
+
+ALL VISUALIZATION TESTS PASSED
+19. Project Structure
 manufacturer-agent/
+|
+├── start_app.py
 |
 ├── backend/
 │   |
@@ -511,6 +695,8 @@ manufacturer-agent/
 │   │   │       ├── generate_sql.py
 │   │   │       ├── validate_sql.py
 │   │   │       ├── execute_sql.py
+│   │   │       ├── increment_retry.py
+│   │   │       ├── query_failure.py
 │   │   │       ├── visualize.py
 │   │   │       └── respond.py
 │   │   |
@@ -537,13 +723,12 @@ manufacturer-agent/
 │   │   ├── config.py
 │   │   └── main.py
 │   |
-│   ├── test_graph.py
-│   ├── test_personas.py
-│   ├── test_access.py
-│   ├── test_procurement.py
-│   ├── test_receipts.py
-│   ├── test_visualization.py
-│   └── test_evaluation.py
+│   ├── requirements.txt
+│   ├── test_evaluation.py
+│   ├── test_security_hardening.py
+│   ├── test_reliability.py
+│   ├── test_visualization_general.py
+│   └── ...
 │
 ├── frontend/
 │   |
@@ -559,7 +744,7 @@ manufacturer-agent/
 ├── .gitignore
 ├── .env.example
 └── README.md
-11. Environment Variables
+20. Environment Variables
 
 Create:
 
@@ -579,23 +764,13 @@ LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=your_langsmith_api_key
 LANGSMITH_PROJECT=manufacturer-agent
 
-Do not commit the real .env file.
+Never commit the actual .env.
 
-The repository .gitignore excludes environment files.
-
-Example safe file:
-
-.env.example
-
-may be committed with placeholder credentials.
-
-12. Backend Setup
-
-Navigate to the backend:
-
+21. Setup
+Backend
 cd backend
 
-Create a virtual environment if required:
+Create environment:
 
 python -m venv venv
 
@@ -603,11 +778,11 @@ Windows:
 
 venv\Scripts\activate
 
-Install dependencies:
+Install:
 
 pip install -r requirements.txt
 
-Start FastAPI:
+Start backend:
 
 python -m uvicorn app.main:app --reload
 
@@ -618,30 +793,49 @@ http://localhost:8000
 Swagger:
 
 http://localhost:8000/docs
-13. Frontend Setup
-
-Navigate to:
-
+Frontend
 cd frontend
 
-Install dependencies:
+Install:
 
 npm install
 
-Start the development server:
+Start:
 
 npm run dev
 
 Frontend:
 
 http://localhost:3000
-14. API Usage
+22. Start Frontend and Backend Together
+
+A root launcher is included:
+
+start_app.py
+
+From the project root:
+
+python start_app.py
+
+This starts:
+
+Frontend: http://localhost:3000
+Backend:  http://localhost:8000
+Swagger:  http://localhost:8000/docs
+
+Press:
+
+Ctrl+C
+
+to stop both servers.
+
+23. API Usage
 
 Endpoint:
 
 POST /api/chat
 
-Example:
+Example request:
 
 {
   "question": "Show receipts for PO-2026-0029.",
@@ -662,119 +856,19 @@ Example response structure:
   },
   "visualization": null
 }
-15. SQL Safety
+24. LangSmith
 
-Generated SQL is checked before execution.
+LangSmith tracing allows inspection of the full workflow.
 
-The validator:
-
-Allows read-only queries.
-Rejects unauthorized tables.
-Rejects modification statements.
-Rejects multiple statements.
-Verifies persona-level table access.
-
-Forbidden SQL operations include:
-
-INSERT
-UPDATE
-DELETE
-DROP
-ALTER
-TRUNCATE
-CREATE
-GRANT
-REVOKE
-16. Access-Control Examples
-Warehouse attempting Procurement
-
-Request:
-
-{
-  "question": "Show me all purchase orders.",
-  "persona": "warehouse"
-}
-
-Response:
-
-{
-  "answer": "Access denied: warehouse users cannot access procurement data.",
-  "persona": "warehouse",
-  "domain": "procurement",
-  "sql": null
-}
-
-Notice:
-
-sql = null
-
-The request is blocked before SQL generation.
-
-Procurement attempting Inventory Analysis
-
-Request:
-
-{
-  "question": "What is the current stock of all items?",
-  "persona": "procurement"
-}
-
-Response:
-
-{
-  "answer": "Access denied: procurement users cannot perform inventory analysis.",
-  "persona": "procurement",
-  "domain": "inventory",
-  "sql": null
-}
-17. Automated Evaluation
-
-The project includes an automated evaluation suite:
-
-python test_evaluation.py
-
-Current MVP evaluation result:
-
-Passed: 8
-Failed: 0
-Total:  8
-Score:  100.0%
-
-Covered scenarios:
-
-Test	Result
-Warehouse inventory access	PASS
-Warehouse procurement denial	PASS
-Procurement purchase-order access	PASS
-Procurement inventory denial	PASS
-Owner inventory access	PASS
-Multi-table PO details	PASS
-PO receipt joins	PASS
-Price-history visualization	PASS
-
-Important:
-
-This does not claim that the agent has 100% general natural-language accuracy.
-
-It means that the current deterministic MVP evaluation suite has all critical scenarios passing.
-
-18. LangSmith Observability
-
-LangSmith tracing is enabled for the project.
-
-Example successful workflow:
+Typical successful trace:
 
 classify
     |
 access_guard
     |
-access_router
-    |
 generate_sql
     |
 validate_sql
-    |
-validation_router
     |
 execute_sql
     |
@@ -782,134 +876,112 @@ visualize
     |
 respond
 
-For access-denied requests:
+Runtime repair can look like:
+
+generate_sql
+    |
+validate_sql
+    |
+execute_sql
+    |
+execution_error
+    |
+increment_retry
+    |
+generate_sql
+    |
+validate_sql
+    |
+execute_sql
+
+Access-denied trace:
 
 classify
     |
 access_guard
     |
-DENIED
-    |
 respond
 
-SQL generation and database execution are not reached.
+SQL generation and DB execution are never reached.
 
-LangSmith helps inspect:
-
-Node-level execution
-LLM prompts
-LLM responses
-Generated SQL
-Latency
-Errors
-Guardrail decisions
-19. Design Decisions
+25. Design Decisions
 Why LangGraph?
 
-The application is not implemented as a single LLM prompt.
+The project is deliberately not implemented as:
 
-LangGraph provides explicit stateful orchestration and conditional routing.
+Question → LLM → SQL
 
-This makes it easier to:
+LangGraph provides explicit workflow control.
 
-Separate responsibilities
-Add access-control nodes
-Add retries
-Add validation
-Debug execution
-Trace individual workflow stages
-Extend the application later
-Why Separate SQL Generation and Validation?
+This allows:
 
-An LLM should not directly execute arbitrary database queries.
+Deterministic access checks
+Conditional branches
+Retries
+SQL validation
+Runtime repair
+Observability
+Clear separation of responsibilities
+Why SQLGlot?
 
-The system therefore separates:
+A simple regex-based table parser can miss SQL structures such as:
 
-LLM SQL Generation
-        |
-        v
-Deterministic SQL Validation
-        |
-        v
-Database Execution
+SELECT *
+FROM table_a a, table_b b
 
-This reduces the risk of unauthorized or destructive operations.
+or nested subqueries.
 
-Why Persona-Level Guardrails Before SQL Generation?
+SQLGlot provides AST-based parsing so the application can inspect all referenced physical tables more reliably.
 
-Unauthorized requests should ideally never reach the SQL generator.
+Why Persona-Scoped Schema?
 
-Example:
+Prompt instructions are not a security boundary.
 
-Warehouse
-    +
-Purchase-order question
-        |
-        v
-Classifier
-        |
-        v
-Access Guard
-        |
-        v
-DENIED
+Instead of showing every persona every table and saying:
 
-This reduces unnecessary LLM/database work and provides a clearer security boundary.
+Please don't use the forbidden ones
 
-20. Current Limitations
+the schema itself is filtered before being sent to the SQL generator.
 
-This project is intentionally scoped as an MVP.
+This reduces exposure and improves SQL generation quality.
 
-Read-Only Operations
+Why Read-Only First?
 
-The current system focuses on read-only analytics and question answering.
+The interviewer-defined minimum requirement was database reads.
 
-Write operations such as:
+Write actions have deliberately not been implemented because safe writes require:
 
-Create purchase order
-Update purchase order
-Modify stock
-Receive inventory
-Delete records
-
-are intentionally not exposed.
-
-Production-grade write support would require:
-
-Explicit confirmation
-Approval workflows
-Transaction management
-Audit logging
-Rollback capability
+Strong authentication
 Fine-grained authorization
-SQL Validator
+Confirmation
+Approval workflows
+Audit logging
+Database transactions
+Idempotency
+Rollback behavior
 
-The current validator is lightweight.
+The MVP therefore prioritizes trustworthy read operations.
 
-For production, an AST-based parser such as SQLGlot could be used for deeper query analysis.
+26. Known Limitations
+No Conversation Memory
 
-Database Security
+Each /api/chat request is currently independent.
 
-A production deployment should additionally use:
+For example:
 
-Dedicated read-only database credentials
-Query timeouts
-Maximum result limits
-Connection pooling
-Row/column-level authorization
-Database audit logging
-Schema Scaling
+User:
+How much did we spend with Vendor A this month?
 
-The current system can provide schema context directly to the SQL generator.
+User:
+What about last month?
 
-For significantly larger schemas, a production architecture should use schema retrieval based on:
+The second request does not currently inherit context from the first.
 
-user question
-    |
-domain
-    |
-intent
-    |
-relevant tables only
+A production version could use:
 
-This would reduce token usage and improve SQL accuracy.
+LangGraph checkpointers
+session IDs
+message history
+conversation persistence
+
+This was intentionally left outside the core MVP scope.
